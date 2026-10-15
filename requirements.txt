@@ -1,0 +1,20 @@
+# Part I Workbench notebook (Chapters 1-7): notebooks/part1_one_agent.ipynb
+# Install: pip install -r requirements.txt
+#
+# Ranges, not exact pins: Colab preinstalls pandas, matplotlib, and seaborn,
+# and exact pins would force reinstalls and a runtime restart on every launch.
+# The two packages the agent itself depends on are capped below their next
+# major version, where breaking changes would land.
+
+# Agent: contracts and the live model client
+pydantic>=2.7,<3
+ollama>=0.4,<1
+pyyaml>=6,<7                 # Chapter 3: instruction and skill frontmatter (safe_load only)
+
+# Notebook only: audit tables and figures
+pandas>=2.2
+matplotlib>=3.8
+seaborn>=0.13
+
+# Chapter 2's tools use only the standard library (csv, urllib).
+# Chapter 3's config files live in config/ and are fetched like the evidence.

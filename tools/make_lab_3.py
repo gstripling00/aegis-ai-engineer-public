@@ -22,7 +22,7 @@ BASE_SHA = sha("instructions/base.md")
 TRIAGE_SHA = sha("instructions/triage.md")
 SKILL_SHA = sha("skills/credential-attack-triage/SKILL.md")
 import json
-_c24 = next(c.source for c in nb.cells if c.source.startswith("# --- Step 2.4"))
+_c24 = next(c.source for c in nb.cells if c.source.startswith("# --- Step 2.1"))
 _lit = _c24[_c24.index("TOOL_SCHEMAS = ["):_c24.index("\n]", _c24.index("TOOL_SCHEMAS = [")) + 2]
 _scope = {}
 exec(_lit, _scope)
@@ -282,7 +282,7 @@ def execute_tool_checked(call: ToolCall) -> Observation:
     validate_observation(observation)                # Chapter 3: check it before anyone reads it
     return observation
 
-for obs in (ip_obs, login_obs):                      # the real evidence from Step 2.3 passes
+for obs in (ip_obs, login_obs):                      # the real evidence from Step 2.4 passes
     validate_observation(obs)
     print("passed:", obs.evidence_id, f"({len(obs.records)} rows)")
 

@@ -132,7 +132,53 @@ STATUS_MAP = {"CLOSE": "CLOSED", "ESCALATE": "ESCALATED",
 print("Chapter 1 loaded. Alert", ingest_alert(alert_json).alert_id, "starts at", ingest_alert(alert_json).status)''')
 
 # ---------------------------------------------------------------- 2
-md("""## Step 2: Connect to the evidence source
+md("""## Step 2: Name and describe the tools
+
+Start with what the model will see. Each tool's schema has three parts: a name, a one-line description, and its parameters, written as JSON Schema. To the model, that schema is the tool's instructions: the name says what comes back, and the description names the scope. `TOOL_SCHEMAS` describes both tools in the function-calling format Ollama accepts.
+
+No tool code exists yet, and that is the point: the interface comes first. The model gets this catalog, never the functions. Step 6 registers the functions the harness may run.""")
+code('''# --- Step 2: name and describe the tools ---
+TOOL_SCHEMAS = [
+    {"type": "function", "function": {
+        "name": "ip_reputation",
+        "description": "Look up threat-intel reputation for the alert's source IP.",
+        "parameters": {"type": "object",
+                       "properties": {"ip": {"type": "string"}},
+                       "required": ["ip"]}}},
+    {"type": "function", "function": {
+        "name": "recent_login_history",
+        "description": "Get recent sign-ins for the alert's user, newest first.",
+        "parameters": {"type": "object",
+                       "properties": {"user_id": {"type": "string"}},
+                       "required": ["user_id"]}}},
+]
+
+for schema in TOOL_SCHEMAS:
+    f = schema["function"]
+    print(f"{f['name']}({', '.join(f['parameters']['required'])}): {f['description']}")''')
+
+# ---------------------------------------------------------------- 3
+md("""## Step 3: Define the contracts
+
+Two new contracts. A `ToolCall` is what the model may ask for. An `Observation` is what the harness returns, and the harness, not the model, fills in where it came from.""")
+code('''# --- Step 3: tool contracts ---
+class ToolCall(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    name: str                                 # which tool
+    arguments: dict[str, str]                 # its arguments, all strings
+
+class Observation(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    evidence_id: str                          # harness-assigned, cited by the decision
+    tool: str
+    arguments: dict[str, str]
+    source: str                               # where the records came from
+    records: list[dict]
+
+print(ToolCall(name="ip_reputation", arguments={"ip": "198.51.100.4"}))''')
+
+# ---------------------------------------------------------------- 4
+md("""## Step 4: Connect to the evidence source
 
 The evidence is not in this notebook. It lives in a repository the SOC's tooling team owns: a threat-intel feed (`ip_reputation.csv`) and the identity provider's sign-in log (`login_history.csv`). Triage reaches them the way it would reach any outside system: over the network, with a timeout, a size limit, and no guarantee the answer is well formed.
 
@@ -143,7 +189,7 @@ Three things make this an external call rather than a file read:
 - **The response is untrusted.** `fetch_csv()` checks its size and columns before anything uses it.
 
 The repository is public, so this lab needs no credential. A production source would: a token the harness holds, scoped to read-only access, and never shown to the model. If the data moves, change `EVIDENCE_REPO` or `EVIDENCE_REF`; no tool code changes.""")
-code('''# --- Step 2: the evidence source ---
+code('''# --- Step 4: the evidence source ---
 import csv, io, os
 import urllib.error, urllib.request
 import pandas as pd
@@ -184,35 +230,15 @@ log = fetch_csv("login_history.csv", {"user_id", "timestamp", "outcome"})
 print(f"ip_reputation.csv: {len(feed)} rows | login_history.csv: {len(log)} rows")
 display(pd.DataFrame(log).head(3))''')
 
-# ---------------------------------------------------------------- 3
-md("""## Step 3: Define the tool contracts
-
-Two new contracts. A `ToolCall` is what the model may ask for. An `Observation` is what the harness returns, and the harness, not the model, fills in where it came from.""")
-code('''# --- Step 3: tool contracts ---
-class ToolCall(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-    name: str                                 # which tool
-    arguments: dict[str, str]                 # its arguments, all strings
-
-class Observation(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
-    evidence_id: str                          # harness-assigned, cited by the decision
-    tool: str
-    arguments: dict[str, str]
-    source: str                               # where the records came from
-    records: list[dict]
-
-print(ToolCall(name="ip_reputation", arguments={"ip": "198.51.100.4"}))''')
-
-# ---------------------------------------------------------------- 4
-md("""## Step 4: Build the two tools
+# ---------------------------------------------------------------- 5
+md("""## Step 5: Write the tool functions
 
 Each tool makes one call to the evidence source, keeps only the rows for the requested key, caps how many it returns, and keeps only the fields Triage needs. The sign-in log has 22 columns, including email addresses; Triage gets 10. Passing less is cheaper, and it keeps data the model has no use for out of its context.
 
 The tools are read-only: nothing here can change the source.
 
 **In the enterprise:** a real threat-intel or identity API filters on the server and returns only the matching rows. A static file can't, so this tool downloads the whole log and filters it here. The model never sees another user's rows, but the harness briefly holds them. In production, scope is enforced by the service as well as the client.""")
-code('''# --- Step 4: two read-only tools ---
+code('''# --- Step 5: two read-only tools ---
 MAX_ROWS = 20                                 # no tool returns an unbounded result
 
 IP_FIELDS = ["ip_address", "reputation", "risk_score", "confidence_score", "threat_category",
@@ -245,11 +271,11 @@ login_obs = recent_login_history("userid123")
 print(len(login_obs.records), "sign-ins for userid123, newest first:")
 display(pd.DataFrame(login_obs.records).head(4))''')
 
-# ---------------------------------------------------------------- 5
-md("""## Step 5: Register the tools and describe them to the model
+# ---------------------------------------------------------------- 6
+md("""## Step 6: Register the tools and set their scope
 
-`TOOLS` is what the harness may run. `TOOL_SCHEMAS` is what the model sees: names, descriptions, and argument types, in the function-calling format Ollama accepts. The model gets the catalog, never the functions.""")
-code('''# --- Step 5: registry + schemas ---
+`TOOLS` is what the harness may run. `TOOL_SCOPE` says which argument each tool takes and which alert field that argument must match; Step 7 enforces it. The last line checks that the catalog the model sees (Step 2) and the registry agree.""")
+code('''# --- Step 6: registry and scope ---
 TOOLS = {"ip_reputation": ip_reputation,
          "recent_login_history": recent_login_history}
 
@@ -257,29 +283,14 @@ TOOLS = {"ip_reputation": ip_reputation,
 TOOL_SCOPE = {"ip_reputation": ("ip", "source_ip"),
               "recent_login_history": ("user_id", "user_id")}
 
-TOOL_SCHEMAS = [
-    {"type": "function", "function": {
-        "name": "ip_reputation",
-        "description": "Look up threat-intel reputation for the alert's source IP.",
-        "parameters": {"type": "object",
-                       "properties": {"ip": {"type": "string"}},
-                       "required": ["ip"]}}},
-    {"type": "function", "function": {
-        "name": "recent_login_history",
-        "description": "Get recent sign-ins for the alert's user, newest first.",
-        "parameters": {"type": "object",
-                       "properties": {"user_id": {"type": "string"}},
-                       "required": ["user_id"]}}},
-]
-
 print("registered:", sorted(TOOLS))
 print("schemas match registry:", sorted(TOOLS) == sorted(s["function"]["name"] for s in TOOL_SCHEMAS))''')
 
-# ---------------------------------------------------------------- 6
-md("""## Step 6: Validate every tool call before it runs
+# ---------------------------------------------------------------- 7
+md("""## Step 7: Validate every tool call
 
 Pydantic checks the shape. These checks enforce what a schema cannot: the tool exists, it gets exactly the argument it takes, and that argument belongs to the current alert. A well-formed request for some other IP is still rejected.""")
-code('''# --- Step 6: tool-call validation ---
+code('''# --- Step 7: tool-call validation ---
 class ToolCallError(ValueError):
     pass
 
@@ -303,11 +314,11 @@ for call in [ToolCall(name="ip_reputation", arguments={"ip": "198.51.100.4"}),
     except ToolCallError as error:
         print("rejected:", error)''')
 
-# ---------------------------------------------------------------- 7
-md("""## Step 7: Execute, and fail closed
+# ---------------------------------------------------------------- 8
+md("""## Step 8: Execute, and fail closed
 
 A tool can fail: the source is unreachable, refuses the request, or returns something malformed. `execute_tool()` turns any failure into a `ToolCallError`, so the harness records it and stops instead of crashing.""")
-code('''# --- Step 7: execution ---
+code('''# --- Step 8: execution ---
 def execute_tool(call: ToolCall) -> Observation:
     try:
         return TOOLS[call.name](**call.arguments)
@@ -317,15 +328,15 @@ def execute_tool(call: ToolCall) -> Observation:
 obs = execute_tool(ToolCall(name="recent_login_history", arguments={"user_id": "userid123"}))
 print(obs.evidence_id, "from", obs.source, f"({len(obs.records)} rows)")''')
 
-# ---------------------------------------------------------------- 8
-md("""## Step 8: Extend the context, the decision, and the instructions
+# ---------------------------------------------------------------- 9
+md("""## Step 9: Extend the context, the decision, and the instructions
 
 Three Chapter 1 assets grow, and each grows by addition:
 
 - The context package now carries the tool catalog, the observations so far, and how many model calls remain.
 - The decision adds `evidence_ids`: the observations it rests on.
 - The standing instructions get a new version that tells Triage to gather evidence first.""")
-code('''# --- Step 8: context v2, decision v2, instructions v2 ---
+code('''# --- Step 9: context v2, decision v2, instructions v2 ---
 class ToolContext(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     instructions: str
@@ -364,11 +375,11 @@ def build_tool_context(alert: AlertState, observations: list[Observation], calls
 
 print(build_tool_context(ingest_alert(alert_json), [], 4).model_dump_json(indent=2, exclude={"instructions"}))''')
 
-# ---------------------------------------------------------------- 9
-md("""## Step 9: Validate the grounded decision
+# ---------------------------------------------------------------- 10
+md("""## Step 10: Validate the grounded decision
 
 Everything Chapter 1 checked, plus one rule: a decision may only cite evidence the harness actually retrieved.""")
-code('''# --- Step 9: decision validation v2 ---
+code('''# --- Step 10: decision validation v2 ---
 def validate_grounded_decision(decision: GroundedDecision, alert: AlertState,
                                observations: list[Observation]) -> None:
     validate_decision(decision, alert)                          # every Chapter 1 rule still applies
@@ -385,21 +396,21 @@ try:
 except DecisionValidationError as error:
     print("rejected:", error)''')
 
-# ---------------------------------------------------------------- 10
-md("""## Step 10: Update the model seam
+# ---------------------------------------------------------------- 11
+md("""## Step 11: Update the model seam
 
 In Chapter 1 the model returned one decision. Now each call returns one step: either a tool request or a final decision.""")
-code('''# --- Step 10: the model seam v2 ---
+code('''# --- Step 11: the model seam v2 ---
 class ToolUsingModel(Protocol):
     def next_step(self, context: ToolContext) -> ToolCall | GroundedDecision:
         """Request one tool, or return the final decision."""
         ...''')
 
-# ---------------------------------------------------------------- 11
-md("""## Step 11: Two models that fit the seam
+# ---------------------------------------------------------------- 12
+md("""## Step 12: Two models that fit the seam
 
 A deterministic model for tests, and Gemma for live runs. Both ask for each missing piece of evidence, then decide from what came back.""")
-code('''# --- Step 11a: deterministic model (no network, same answer every run) ---
+code('''# --- Step 12a: deterministic model (no network, same answer every run) ---
 class DeterministicToolModel:
     def next_step(self, context: ToolContext) -> ToolCall | GroundedDecision:
         alert = context.alert
@@ -427,7 +438,7 @@ class DeterministicToolModel:
             reason="The retrieved evidence does not settle the alert.",
             missing_evidence=["analyst_review"], evidence_ids=cited)''')
 
-code('''# --- Step 11b: Gemma through Ollama (live model, same seam) ---
+code('''# --- Step 12b: Gemma through Ollama (live model, same seam) ---
 import json
 import ollama
 
@@ -462,11 +473,11 @@ class GemmaToolModel:
                                     options={"temperature": 0})
         return GroundedDecision.model_validate_json(response.message.content)''')
 
-# ---------------------------------------------------------------- 12
-md("""## Step 12: The bounded tool loop
+# ---------------------------------------------------------------- 13
+md("""## Step 13: The bounded tool loop
 
 Each pass: one model call. If the model asks for a tool, the harness validates the request, runs it, and records the observation. If the model returns a decision, the harness validates it and records it. Any rejection, tool failure, or exhausted budget records `FAILED` and stops.""")
-code('''# --- Step 12: the harness v2 ---
+code('''# --- Step 13: the harness v2 ---
 MAX_MODEL_CALLS = 4                           # two lookups, one decision, one spare
 
 def fail(alert: AlertState, reason: str) -> AlertState:
@@ -508,11 +519,11 @@ def run_triage_agent_with_tools(alert: AlertState, model: ToolUsingModel,
 
     return fail(alert, f"no decision within {max_calls} model calls")''')
 
-# ---------------------------------------------------------------- 13
-md("""## Step 13: Run Aegis with the deterministic model
+# ---------------------------------------------------------------- 14
+md("""## Step 14: Run Aegis with the deterministic model
 
 In Chapter 1 this alert stopped at `NEEDS_INVESTIGATION`. With evidence, the same alert escalates, and the decision names what it rests on.""")
-code('''# --- Step 13: deterministic run ---
+code('''# --- Step 14: deterministic run ---
 alert = ingest_alert(alert_json)
 result = run_triage_agent_with_tools(alert, DeterministicToolModel())
 
@@ -522,11 +533,11 @@ print("missing:", result.missing_evidence)
 for event in result.trajectory:
     print("  ", event)''')
 
-# ---------------------------------------------------------------- 14
-md("""## Step 14: Run Aegis with Gemma
+# ---------------------------------------------------------------- 15
+md("""## Step 15: Run Aegis with Gemma
 
 The same harness with a live model. Gemma chooses which tools to call and when to stop; the harness still decides what runs and what is recorded.""")
-code('''# --- Step 14: live run with Gemma ---
+code('''# --- Step 15: live run with Gemma ---
 try:  # live model: optional
     alert = ingest_alert(alert_json)
     result = run_triage_agent_with_tools(alert, GemmaToolModel())
@@ -538,11 +549,11 @@ try:  # live model: optional
 except Exception as error:  # Ollama down: skip, don't stop the notebook
     print(f"Gemma run skipped (is Ollama running? see Step 0): {type(error).__name__}")''', tags=OLLAMA)
 
-# ---------------------------------------------------------------- 15
-md("""## Step 15: Prove the harness rejects bad requests
+# ---------------------------------------------------------------- 16
+md("""## Step 16: Prove the harness rejects bad requests
 
 Each scripted model misbehaves in one way. Every run must stop with `FAILED`, and the reason must name the problem.""")
-code('''# --- Step 15: rejected-request checks ---
+code('''# --- Step 16: rejected-request checks ---
 class ScriptedModel:
     """Returns a fixed sequence of steps, whatever the context says."""
     def __init__(self, *steps):
@@ -578,11 +589,11 @@ checks = pd.DataFrame(rows).set_index("check")
 display(checks)
 assert checks["passed"].all(), "A control failed: check the rows marked False."''')
 
-# ---------------------------------------------------------------- 16
-md("""## Step 16: Observability — read the audit trail
+# ---------------------------------------------------------------- 17
+md("""## Step 17: Observability — read the audit trail
 
 The trail now shows every tool the harness ran and the evidence each one produced, so a reviewer can trace the decision back to its sources.""")
-code('''# --- Step 16: observability ---
+code('''# --- Step 17: observability ---
 def show_audit(alert: AlertState) -> pd.DataFrame:
     events = pd.DataFrame(alert.trajectory, dtype=object).fillna("")
     events.index = range(1, len(events) + 1)
@@ -604,10 +615,10 @@ print("\\nAUDIT RECORD (JSON)")
 print(json.dumps({"alert_id": accepted.alert_id, "status": accepted.status,
                   "trajectory": accepted.trajectory}, indent=2))''')
 
-md("""### Step 16b: See the audit trail
+md("""### Step 17b: See the audit trail
 
 The same two trails as a picture. Open circles are model calls, squares are tool runs, the filled marker is where the run stopped, and an X marks a rejection.""")
-code('''# --- Step 16b: plot the audit trail ---
+code('''# --- Step 17b: plot the audit trail ---
 import matplotlib.pyplot as plt
 import seaborn as sns
 
@@ -644,11 +655,11 @@ ax.set_title("Audit trail for two runs of ALT-1001", loc="left", fontsize=11)
 plt.tight_layout()
 plt.show()''')
 
-# ---------------------------------------------------------------- 17
-md("""## Step 17: Evaluation — did the tools change the answer?
+# ---------------------------------------------------------------- 18
+md("""## Step 18: Evaluation — did the tools change the answer?
 
 With the evidence in hand, an analyst would escalate ALT-1001 at high risk. This scorecard checks each run against that, and checks that the decision cites its evidence and stayed within budget. The Gemma row runs only if the Ollama server from Step 0 is up.""")
-code('''# --- Step 17: evaluation ---
+code('''# --- Step 18: evaluation ---
 EXPECTED = {"status": "ESCALATED", "risk_level": "HIGH"}   # what an analyst expects, given the evidence
 
 def score(name: str, alert: AlertState) -> dict:
@@ -672,10 +683,10 @@ except Exception as error:
 print("DECISION SCORECARD")
 display(pd.DataFrame(scores).set_index("run"))''')
 
-md("""### Step 17b: See the scorecard
+md("""### Step 18b: See the scorecard
 
 The scorecard and the rejection checks as one picture, labeled PASS or FAIL so it reads the same in black and white.""")
-code('''# --- Step 17b: plot the scorecard ---
+code('''# --- Step 18b: plot the scorecard ---
 import textwrap
 
 card = pd.DataFrame(scores).set_index("run")[["status correct", "risk correct", "evidence cited",

@@ -25,7 +25,7 @@ with tempfile.TemporaryDirectory() as d:
 assert lab2.cells[1].source.startswith("## Step 0") and lab2.cells[3].source.startswith("## Step 1")
 ch2 = lab2.cells[5:]
 
-# Renumber: Lab 2's Step 2..17 become Step 2.1..2.16 (sub-steps keep their letter)
+# Renumber: Lab 2's Step 2..18 become Step 2.1..2.17 (sub-steps keep their letter)
 def renumber(m):
     return f"{m.group(1)}2.{int(m.group(2)) - 1}{m.group(3)}"
 step_re = re.compile(r"(Step )(\d+)([a-z]?)")
@@ -44,33 +44,33 @@ def cell_with(text):
     assert len(hits) == 1, f"{text!r} matched {len(hits)} cells"
     return hits[0]
 
-# Step 2.14 (rejection checks): don't overwrite Chapter 1's `rows`
-c = cell_with("# --- Step 2.14:")
+# Step 2.15 (rejection checks): don't overwrite Chapter 1's `rows`
+c = cell_with("# --- Step 2.15:")
 c.source = edit(c.source, "rows = []", "check_rows = []")
 c.source = c.source.replace("rows.append(", "check_rows.append(")
 c.source = edit(c.source, "pd.DataFrame(rows)", "pd.DataFrame(check_rows)")
 
-# Step 2.15 (observability): reuse Chapter 1's show_audit() instead of redefining it
-md15 = cell_with("## Step 2.15: Observability")
+# Step 2.16 (observability): reuse Chapter 1's show_audit() instead of redefining it
+md15 = cell_with("## Step 2.16: Observability")
 md15.source = edit(md15.source, "so a reviewer can trace the decision back to its sources.",
                    "so a reviewer can trace the decision back to its sources. `show_audit()` from "
                    "Chapter 1's Step 12 works unchanged; the trail is just longer.")
-c = cell_with("# --- Step 2.15: observability ---")
+c = cell_with("# --- Step 2.16: observability ---")
 start = c.source.index("def show_audit")
 end = c.source.index("accepted = ")
 c.source = c.source[:start] + c.source[end:]
 c.source = c.source.replace("accepted", "tool_accepted").replace("rejected = ", "tool_rejected = ")
 c.source = c.source.replace("show_audit(rejected)", "show_audit(tool_rejected)")
 
-# Step 2.15b (plot): Chapter 1 already imported seaborn and set the theme; new function name
-c = cell_with("# --- Step 2.15b:")
+# Step 2.16b (plot): Chapter 1 already imported seaborn and set the theme; new function name
+c = cell_with("# --- Step 2.16b:")
 c.source = edit(c.source, 'import matplotlib.pyplot as plt\nimport seaborn as sns\n\nsns.set_theme(style="white", context="notebook")\n', "")
 c.source = c.source.replace("plot_trail", "plot_tool_trail")
 c.source = c.source.replace("(ax, accepted,", "(ax, tool_accepted,").replace("(ax, rejected,", "(ax, tool_rejected,")
 c.source = edit(c.source, "n = len(accepted.trajectory)", "n = len(tool_accepted.trajectory)")
 
-# Step 2.16 (evaluation): keep Chapter 1's EXPECTED and score() intact
-c = cell_with("# --- Step 2.16: evaluation ---")
+# Step 2.17 (evaluation): keep Chapter 1's EXPECTED and score() intact
+c = cell_with("# --- Step 2.17: evaluation ---")
 c.source = c.source.replace("EXPECTED", "EXPECTED_WITH_EVIDENCE").replace("score(", "score_grounded(")
 c.source = edit(c.source, "def score_grounded(name", "def score_grounded(name")
 
